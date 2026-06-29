@@ -11,6 +11,7 @@ from chatbot_api.app.models.schemas import (
     UsageResponse,
 )
 from chatbot_api.app.services import user_service
+from chatbot_api.app.services import chat_service
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
@@ -96,6 +97,8 @@ async def update_bot_style(req: UpdateBotStyleRequest):
     result = user_service.set_bot_style(username, req.bot_style.strip())
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("message", "操作失败"))
+    # 风格切换后，将旧历史总结为摘要，确保新风格不受旧回复影响
+    chat_service.on_style_change(username)
     return BotStyleResponse(
         username=result["username"],
         bot_style=result["bot_style"],

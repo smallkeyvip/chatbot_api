@@ -55,6 +55,35 @@ def clear_history(session_id: str) -> int:
     return count
 
 
+def on_style_change(session_id: str) -> dict:
+    """
+    风格切换时，将旧对话历史总结为简短摘要替换原始记录。
+    保留关键上下文，同时避免旧风格的 AI 回复影响新风格。
+    知识树不受影响。
+    """
+    history = get_history(session_id)
+    if not history:
+        return {"cleared": 0, "summarized": False}
+
+    old_count = len(history)
+
+    # 总结旧历史为简短摘要
+    summary_messages = [
+        SystemMessage(content="请用一两句话简洁总结以下对话的关键上下文要点（用户提过什么、讨论过什么主题），不要包含任何语气或风格特征。"),
+        *history,
+        HumanMessage(content="请总结以上对话的关键上下文。"),
+    ]
+    response = summary_model.invoke(summary_messages)
+    summary_text = response.content.strip()
+
+    # 用摘要替换原始历史
+    history.clear()
+    history.append(HumanMessage(content=f"（之前的对话摘要：{summary_text}）"))
+    history.append(AIMessage(content="好的，我已了解之前的对话内容。"))
+
+    return {"cleared": old_count, "summarized": True}
+
+
 # ---------- 退出词检测 ----------
 EXIT_WORDS = {"quit", "退出", "退下", "再见", "拜拜"}
 
