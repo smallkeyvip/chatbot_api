@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from chatbot_api.app.models.schemas import (
     RegisterRequest, LoginRequest, CheckUserRequest,
     AuthResponse, CheckUserResponse,
+    AutoLoginRequest, LogoutRequest, AutoLoginResponse,
     UpdateThemeRequest, UserSettingsResponse,
     UpdateBotStyleRequest, BotStyleResponse, BotStyleListResponse,
     UsageResponse,
@@ -50,6 +51,28 @@ async def login(req: LoginRequest):
     if not result["success"]:
         raise HTTPException(status_code=401, detail=result["message"])
     return AuthResponse(**result)
+
+
+@router.post("/auto-login", response_model=AutoLoginResponse, summary="自动登录（5分钟内免密）")
+async def auto_login(req: AutoLoginRequest):
+    """
+    使用登录/注册时颁发的免密凭证自动登录。
+    滑动窗口：每次校验通过后凭证自动续期 5 分钟。
+    """
+    if not req.token.strip():
+        raise HTTPException(status_code=400, detail="token 不能为空")
+    result = user_service.auto_login(req.token.strip())
+    if not result["success"]:
+        raise HTTPException(status_code=401, detail=result["message"])
+    return AutoLoginResponse(**result)
+
+
+@router.post("/logout", response_model=AutoLoginResponse, summary="退出登录（注销免密凭证）")
+async def logout(req: LogoutRequest):
+    """注销免密登录凭证，之后需重新输入密码登录。"""
+    if req.token and req.token.strip():
+        user_service.logout(req.token.strip())
+    return AutoLoginResponse(success=True, message="已退出登录")
 
 
 @router.post("/theme", response_model=UserSettingsResponse, summary="更新主题风格")

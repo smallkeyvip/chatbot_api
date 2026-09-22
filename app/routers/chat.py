@@ -8,6 +8,7 @@ from chatbot_api.app.models.schemas import (
     ClearRequest, ClearResponse,
     ExitRequest, ExitResponse,
     SessionInfoResponse,
+    RecommendResponse,
 )
 from chatbot_api.app.services import chat_service
 from chatbot_api.app.services import user_service
@@ -122,4 +123,24 @@ async def get_session_info(session_id: str):
         history_count=len(history),
         knowledge_count=knowledge_count,
         message="success",
+    )
+
+
+@router.get("/recommendations", response_model=RecommendResponse, summary="猜你喜欢推荐问题")
+async def get_recommendations(session_id: str, limit: int = chat_service.RECOMMEND_COUNT):
+    """
+    基于用户历史聊天记录（知识树 + 最近对话）生成推荐问题，用于首页工作台「猜你喜欢」。
+    - 无历史时返回默认推荐池（source=default）
+    - 有历史时由模型生成（source=history），结果缓存 10 分钟
+    - 该接口不计入用户每日用量
+    """
+    if not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id 不能为空")
+    limit = max(1, min(limit, 6))
+
+    result = chat_service.get_recommendations(session_id.strip(), limit)
+    return RecommendResponse(
+        session_id=session_id,
+        items=result["items"],
+        source=result["source"],
     )

@@ -77,12 +77,42 @@ class AuthResponse(BaseModel):
     message: str
     username: Optional[str] = None
     is_new: Optional[bool] = None  # True=新注册 False=已存在
+    # 5 分钟免密自动登录凭证
+    auto_login_token: Optional[str] = None
+    auto_login_expires_in: Optional[int] = Field(None, description="凭证有效期（秒）")
+
+
+class AutoLoginRequest(BaseModel):
+    token: str = Field(..., description="登录/注册时颁发的免密凭证")
+
+
+class LogoutRequest(BaseModel):
+    token: Optional[str] = Field(None, description="免密凭证（可选）")
+
+
+class AutoLoginResponse(BaseModel):
+    success: bool
+    message: str
+    username: Optional[str] = None
 
 
 class CheckUserResponse(BaseModel):
     exists: bool
     username: str
     message: str  # "用户已注册，请登录" 或 "用户未注册，请注册"
+
+
+# ==================== 猜你喜欢（推荐问题） ====================
+
+class RecommendItem(BaseModel):
+    question: str
+
+
+class RecommendResponse(BaseModel):
+    session_id: str
+    items: list[RecommendItem]
+    source: str = "default"  # history=基于历史生成 default=默认推荐池
+    message: str = "success"
 
 
 # ==================== 用户设置/风格 ====================

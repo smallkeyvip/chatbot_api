@@ -409,6 +409,29 @@
   .size-btn:hover { border-color: var(--accent); color: var(--accent); }
   .size-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+  /* ===== 猜你喜欢 ===== */
+  #recommend-area { margin: 6px 2px 10px; animation: msgIn 0.3s cubic-bezier(0.34,1.56,0.64,1) both; }
+  #recommend-title { font-size: 12px; color: var(--muted); font-weight: 600; margin: 2px 4px 8px; }
+  .recommend-list { display: flex; flex-direction: column; gap: 8px; }
+  .recommend-card {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border: 1.5px solid var(--border);
+    border-radius: 14px; padding: 10px 12px; cursor: pointer;
+    font-size: 13px; color: var(--ai-text);
+    transition: border-color 0.2s, background 0.2s, transform 0.15s;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .recommend-card:active { transform: scale(0.97); }
+  .recommend-card:hover { border-color: var(--accent); background: var(--accent-light); }
+  .recommend-card .rc-text { flex: 1; line-height: 1.4; }
+  .recommend-card .rc-arrow { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+  .recommend-skeleton {
+    height: 41px; border-radius: 14px; border: 1.5px solid var(--border);
+    background: linear-gradient(90deg, var(--border) 25%, var(--surface) 37%, var(--border) 63%);
+    background-size: 400% 100%; animation: shimmer 1.2s ease infinite;
+  }
+  @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
   /* ===== 响应式 ===== */
   @media (max-width: 480px) {
     #chat-window {
@@ -579,6 +602,7 @@ let isEnded = false;
 let isFullscreen = false;
 let isMinimized = false;
 let currentBotStyle = 'default';
+let hasEnteredChat = false;  // 防止自动登录与手动操作重复进入聊天
 
 const $ = id => document.getElementById(id);
 const chatWin = $('chat-window');
@@ -611,6 +635,51 @@ async function apiGet(path) {
   return { ok: res.ok, status: res.status, data };
 }
 
+// ==================== 自动登录（5分钟免密） ====================
+const AUTO_LOGIN_KEY = 'chatbot_auto_login';
+
+function saveAutoLogin(data) {
+  if (!data || !data.auto_login_token || !data.username) return;
+  try {
+    localStorage.setItem(AUTO_LOGIN_KEY, JSON.stringify({
+      token: data.auto_login_token,
+      username: data.username,
+      expireAt: Date.now() + (data.auto_login_expires_in || 300) * 1000,
+    }));
+  } catch(e) {}
+}
+function loadAutoLogin() {
+  try {
+    const raw = localStorage.getItem(AUTO_LOGIN_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return (obj && obj.token && obj.username) ? obj : null;
+  } catch(e) { return null; }
+}
+function clearAutoLogin() { try { localStorage.removeItem(AUTO_LOGIN_KEY); } catch(e) {} }
+
+// 尝试用本地凭证免密登录；成功则直接进入聊天
+async function tryAutoLogin(showHint) {
+  const saved = loadAutoLogin();
+  if (!saved) return false;
+  // 本地已过期即弃，减少无效请求
+  if (saved.expireAt && Date.now() > saved.expireAt) { clearAutoLogin(); return false; }
+  if (showHint) $('username-hint').textContent = `检测到 ${saved.username} 的登录记录，正在自动登录...`;
+  try {
+    const { ok, data } = await apiPost('/auth/auto-login', { token: saved.token });
+    if (ok && data.username && !hasEnteredChat) {
+      username = data.username;
+      // 滑动窗口：本地同步续期
+      saveAutoLogin({ auto_login_token: saved.token, username: data.username, auto_login_expires_in: 300 });
+      enterChat({ autoLogin: true });
+      return true;
+    }
+  } catch(e) {}
+  clearAutoLogin();
+  if (showHint) $('username-hint').textContent = '相同用户名可延续历史对话';
+  return false;
+}
+
 // ==================== 认证流程 ====================
 $('btn-check-user').addEventListener('click', checkUser);
 $('input-username').addEventListener('keydown', e => { if (e.key === 'Enter') checkUser(); });
@@ -626,6 +695,19 @@ async function checkUser() {
     if (!ok) { showError('username-error', data.detail || '请求失败'); return; }
     username = val;
     if (data.exists) {
+      // 5 分钟内登录过该用户 → 免密自动登录，跳过密码输入
+      const saved = loadAutoLogin();
+      if (saved && saved.username === val && saved.expireAt > Date.now()) {
+        $('btn-check-user').textContent = '自动登录中...';
+        const r = await apiPost('/auth/auto-login', { token: saved.token }).catch(() => ({ ok: false }));
+        $('btn-check-user').textContent = '继续';
+        if (r.ok && r.data && r.data.username) {
+          saveAutoLogin({ auto_login_token: saved.token, username: r.data.username, auto_login_expires_in: 300 });
+          enterChat({ autoLogin: true });
+          return;
+        }
+        clearAutoLogin(); // 凭证已失效，走正常密码流程
+      }
       $('card-username').style.display = 'none';
       $('card-login').style.display = 'block';
       $('login-hint').textContent = `欢迎回来，${val}！`;
@@ -662,6 +744,7 @@ async function doLogin() {
     const { ok, status, data } = await apiPost('/auth/login', { username, password: pwd });
     $('btn-login').textContent = '登录';
     if (!ok) { showError('login-error', data.detail || (status === 401 ? '密码错误' : '登录失败')); return; }
+    saveAutoLogin(data);
     enterChat();
   } catch(e) { $('btn-login').textContent = '登录'; showError('login-error', '网络错误'); }
 }
@@ -678,12 +761,16 @@ async function doRegister() {
     const { ok, data } = await apiPost('/auth/register', { username, password: pwd });
     $('btn-register').textContent = '注册';
     if (!ok) { showError('reg-error', data.detail || '注册失败'); return; }
+    saveAutoLogin(data);
     enterChat();
   } catch(e) { $('btn-register').textContent = '注册'; showError('reg-error', '网络错误'); }
 }
 
 // ==================== 进入聊天 ====================
-async function enterChat() {
+async function enterChat(opts) {
+  if (hasEnteredChat) return;  // 防止自动登录与手动操作重复进入
+  hasEnteredChat = true;
+  const fromAutoLogin = !!(opts && opts.autoLogin);
   sessionId = username;
   $('splash').classList.add('hidden');
   $('header-session').textContent = '👤 ' + username;
@@ -713,7 +800,11 @@ async function enterChat() {
   refreshUsage();
   appendTimestamp('今天 ' + formatTime());
   appendBubble('ai', `你好，${username}！我是 AI 助手，有什么可以帮你的？😊\n\n发送「再见」可结束会话并自动保存，发送「清除」可清空历史记录。\n点击右上角 🎭 可切换我的聊天风格哦～`);
+  if (fromAutoLogin) appendSys('🔓 已自动登录（5 分钟内免密）');
   scrollBottom(false);
+
+  // 首页工作台：加载「猜你喜欢」推荐问题
+  loadRecommendations();
 }
 
 // ==================== 主题切换 ====================
@@ -946,7 +1037,13 @@ function updateUsageBadge(data) {
 }
 
 // ==================== 退出登录 ====================
-$('btn-logout').addEventListener('click', () => { if (confirm('确定退出登录？')) location.reload(); });
+$('btn-logout').addEventListener('click', async () => {
+  if (!confirm('确定退出登录？')) return;
+  const saved = loadAutoLogin();
+  if (saved) { try { await apiPost('/auth/logout', { token: saved.token }); } catch(e) {} }
+  clearAutoLogin();
+  location.reload();
+});
 
 // ==================== 消息渲染 ====================
 function appendTimestamp(text) {
@@ -989,7 +1086,7 @@ function handleEnded() {
 
 // ==================== 发送消息 ====================
 async function sendMessage(text) {
-  if (!text.trim() || isEnded) return;
+  if (!text.trim() || isEnded) return false;
   $('msg-input').value = ''; $('msg-input').style.height = 'auto';
   $('send-btn').disabled = true;
   appendBubble('user', text);
@@ -1001,9 +1098,10 @@ async function sendMessage(text) {
       removeThinking();
       if (ok) appendSys('🗑 ' + data.message);
     } catch(e) { removeThinking(); appendSys('⚠️ 网络错误'); }
-    $('send-btn').disabled = false; return;
+    $('send-btn').disabled = false; return true;
   }
 
+  let success = false;
   showThinking();
   try {
     const res = await fetch(API + '/chat/send', {
@@ -1029,12 +1127,81 @@ async function sendMessage(text) {
       appendBubble('ai', data.reply || '（无回复）');
       if (data.daily_chat_used !== undefined) updateUsageBadge(data);
       if (data.exited) handleEnded();
+      success = true;
     }
   } catch(e) {
     removeThinking();
     appendBubble('ai', '⚠️ 无法连接服务，请确认后端已启动');
   }
   if (!isEnded) $('send-btn').disabled = false;
+  return success;
+}
+
+// ==================== 猜你喜欢（首页工作台推荐） ====================
+async function loadRecommendations() {
+  if (isEnded || !sessionId) return;
+  const area = document.createElement('div');
+  area.id = 'recommend-area';
+  const title = document.createElement('div');
+  title.id = 'recommend-title';
+  title.textContent = '✨ 猜你喜欢';
+  area.appendChild(title);
+
+  // 骨架加载态
+  const skList = document.createElement('div');
+  skList.className = 'recommend-list';
+  for (let i = 0; i < 4; i++) {
+    const sk = document.createElement('div');
+    sk.className = 'recommend-skeleton';
+    skList.appendChild(sk);
+  }
+  area.appendChild(skList);
+  msgs.appendChild(area);
+  scrollBottom(true);
+
+  try {
+    const { ok, data } = await apiGet('/chat/recommendations?session_id=' + encodeURIComponent(sessionId));
+    // 失败或空结果静默移除，不打扰用户
+    if (!ok || !data.items || !data.items.length) { area.remove(); return; }
+    renderRecommendCards(area, data);
+  } catch(e) { area.remove(); }
+}
+
+function renderRecommendCards(area, data) {
+  const icons = ['💬', '🔍', '📚', '🚀', '🧠', '✍️'];
+  area.innerHTML = '';
+  const title = document.createElement('div');
+  title.id = 'recommend-title';
+  title.textContent = data.source === 'default' ? '💡 试试这些问题' : '✨ 猜你喜欢';
+  area.appendChild(title);
+
+  const list = document.createElement('div');
+  list.className = 'recommend-list';
+  (data.items || []).forEach((item, i) => {
+    const card = document.createElement('div');
+    card.className = 'recommend-card';
+    const icon = document.createElement('span');
+    icon.textContent = icons[i % icons.length];
+    const text = document.createElement('span');
+    text.className = 'rc-text';
+    text.textContent = item.question;
+    const arrow = document.createElement('span');
+    arrow.className = 'rc-arrow';
+    arrow.textContent = '➤';
+    card.appendChild(icon); card.appendChild(text); card.appendChild(arrow);
+    card.addEventListener('click', async () => {
+      if (isEnded) return;
+      area.style.display = 'none';  // 先收起，发送失败可恢复
+      // 自动输入并立即提交
+      $('msg-input').value = item.question;
+      autoResize($('msg-input'));
+      const sent = await sendMessage(item.question);
+      if (sent) area.remove(); else area.style.display = '';
+    });
+    list.appendChild(card);
+  });
+  area.appendChild(list);
+  scrollBottom(true);
 }
 
 // ==================== 事件绑定 ====================
@@ -1058,7 +1225,12 @@ $('msg-input').addEventListener('input', function() {
   $('send-btn').disabled = !this.value.trim() || isEnded;
 });
 
-$('input-username').focus();
+// ==================== 启动 ====================
+(async () => {
+  // 优先尝试 5 分钟免密自动登录，失败则显示用户名输入
+  const ok = await tryAutoLogin(true);
+  if (!ok) $('input-username').focus();
+})();
 </script>
 </body>
 </html>

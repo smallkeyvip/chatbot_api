@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -17,6 +18,9 @@ _FEEDBACK_FILE = os.path.join(DATA_DIR_PATH, "data", "feedback.json")
 DAILY_CHAT_LIMIT = 50       # 每天最多 50 条对话
 DAILY_TOKEN_LIMIT = 100000  # 每天最多 100k tokens
 
+# ---------- 自动登录（免密凭证） ----------
+AUTO_LOGIN_TTL_SECONDS = 300  # 登录后 5 分钟内免密自动登录（滑动窗口，每次校验通过续期）
+
 # 东八区
 _TZ_CN = timezone(timedelta(hours=8))
 
@@ -27,9 +31,10 @@ def _today_str() -> str:
 
 # ==================== 内存存储 ====================
 
-_users: dict = {}       # {username: {password_hash, salt, theme, bot_style, created_at}}
+_users: dict = {}       # {username: {password_hash, salt, theme, bot_style, created_at, last_login_at}}
 _usage: dict = {}       # {username: {date: {chat_count, token_count}}}
 _feedback: list = []    # [{id, username, category, content, contact, created_at}]
+_auto_tokens: dict = {}  # {token: {username, expires_at}} 自动登录凭证（内存，重启即失效）
 
 
 # ==================== 持久化 ====================
@@ -104,15 +109,21 @@ def register(username: str, password: str) -> dict:
     if username in _users:
         return {"success": False, "message": "用户名已存在，请直接登录"}
     salt = _make_salt()
+    now_iso = datetime.now(tz=_TZ_CN).isoformat()
     _users[username] = {
         "password_hash": _hash_password(password, salt),
         "salt": salt,
         "theme": "default",
         "bot_style": "default",
-        "created_at": datetime.now(tz=_TZ_CN).isoformat(),
+        "created_at": now_iso,
+        "last_login_at": now_iso,
     }
     _save_users()
-    return {"success": True, "message": "注册成功，请登录", "username": username, "is_new": True}
+    token = _issue_auto_token(username)
+    return {
+        "success": True, "message": "注册成功，请登录", "username": username, "is_new": True,
+        "auto_login_token": token, "auto_login_expires_in": AUTO_LOGIN_TTL_SECONDS,
+    }
 
 
 def login(username: str, password: str) -> dict:
@@ -122,7 +133,54 @@ def login(username: str, password: str) -> dict:
     user = _users[username]
     if _hash_password(password, user["salt"]) != user["password_hash"]:
         return {"success": False, "message": "密码错误"}
-    return {"success": True, "message": "登录成功", "username": username, "is_new": False}
+    # 记录最近登录时间并颁发免密凭证
+    user["last_login_at"] = datetime.now(tz=_TZ_CN).isoformat()
+    _save_users()
+    token = _issue_auto_token(username)
+    return {
+        "success": True, "message": "登录成功", "username": username, "is_new": False,
+        "auto_login_token": token, "auto_login_expires_in": AUTO_LOGIN_TTL_SECONDS,
+    }
+
+
+# ==================== 自动登录（5分钟免密，滑动窗口） ====================
+
+def _issue_auto_token(username: str) -> str:
+    """颁发自动登录凭证：单用户单凭证，新登录覆盖旧凭证"""
+    for tk in [t for t, v in _auto_tokens.items() if v["username"] == username]:
+        _auto_tokens.pop(tk, None)
+    token = uuid.uuid4().hex
+    _auto_tokens[token] = {
+        "username": username,
+        "expires_at": time.time() + AUTO_LOGIN_TTL_SECONDS,
+    }
+    return token
+
+
+def auto_login(token: str) -> dict:
+    """
+    校验自动登录凭证。
+    滑动窗口：校验通过后自动续期 AUTO_LOGIN_TTL_SECONDS。
+    """
+    info = _auto_tokens.get(token)
+    if not info:
+        return {"success": False, "message": "自动登录已失效，请重新登录"}
+    if time.time() > info["expires_at"]:
+        _auto_tokens.pop(token, None)
+        return {"success": False, "message": "自动登录已过期，请重新输入密码"}
+    username = info["username"]
+    if username not in _users:
+        _auto_tokens.pop(token, None)
+        return {"success": False, "message": "用户不存在，请重新注册"}
+    # 滑动续期
+    info["expires_at"] = time.time() + AUTO_LOGIN_TTL_SECONDS
+    return {"success": True, "message": "自动登录成功", "username": username}
+
+
+def logout(token: str) -> dict:
+    """注销自动登录凭证"""
+    _auto_tokens.pop(token, None)
+    return {"success": True, "message": "已退出登录"}
 
 
 def list_registered_users() -> dict:
