@@ -149,3 +149,19 @@ class UsageResponse(BaseModel):
     chat_remaining: int
     token_remaining: int
     message: str
+
+
+# ==================== 管理相关 ====================
+
+class AdminUserItem(BaseModel):
+    username: str
+    created_at: str = ""
+    theme: str = "default"
+    bot_style: str = "default"
+    today_chat_count: int = 0
+    today_token_count: int = 0
+
+
+class AdminUserListResponse(BaseModel):
+    total: int
+    items: list[AdminUserItem]

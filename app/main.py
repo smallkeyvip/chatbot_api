@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from .routers import chat
 from .routers import auth
 from .routers import feedback
+from .routers import admin
 from .services.knowledge_service import load_knowledge_from_file
 from .services.user_service import load_all as load_user_data
 
@@ -56,6 +57,7 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(auth.router)
 app.include_router(feedback.router)
+app.include_router(admin.router)
 
 # 挂载静态文件（H5页面）
 # 使用 __file__ 绝对路径计算，兼容任何工作目录

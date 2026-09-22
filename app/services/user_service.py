@@ -125,6 +125,22 @@ def login(username: str, password: str) -> dict:
     return {"success": True, "message": "登录成功", "username": username, "is_new": False}
 
 
+def list_registered_users() -> dict:
+    """列出所有已注册用户（不含密码信息），按注册时间升序"""
+    items = []
+    for name, info in sorted(_users.items(), key=lambda kv: kv[1].get("created_at", "")):
+        today = _usage.get(name, {}).get(_today_str(), {})
+        items.append({
+            "username": name,
+            "created_at": info.get("created_at", ""),
+            "theme": info.get("theme", "default"),
+            "bot_style": info.get("bot_style", "default"),
+            "today_chat_count": today.get("chat_count", 0),
+            "today_token_count": today.get("token_count", 0),
+        })
+    return {"total": len(items), "items": items}
+
+
 # ==================== 主题偏好 ====================
 
 AVAILABLE_THEMES = {"default", "dark", "ocean", "forest", "sunset"}
